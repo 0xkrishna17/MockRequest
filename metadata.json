@@ -1,0 +1,8 @@
+{
+  "name": "ProxyMocker",
+  "description": "A developer tool to manage mock API responses using localStorage. Intercept calls, map URLs to data, and create a single source of truth for your frontend development.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
