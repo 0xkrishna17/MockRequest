@@ -391,7 +391,7 @@ function MockEditor({ mock, onUpdate, onDelete, onClose }: {
 
 function ProjectSettings({ project, onUpdate }: { project: Project, onUpdate: (p: Project) => void }) {
   const [urls, setUrls] = useState(project.baseUrls.join('\n'));
-  const [env, setEnv] = useState<'client' | 'server'>('client');
+  const [env, setEnv] = useState<'client' | 'server' | 'axios'>('client');
 
   const handleSave = () => {
     const list = urls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
@@ -434,7 +434,7 @@ window.fetch = async (url, options = {}) => {
   if (targetProject) {
     const urlObj = new URL(url.toString(), window.location.origin);
     const path = urlObj.pathname;
-    const cleanPath = path.replace(/^\\/+/, '');
+    const cleanPath = path.replace(/^\/+/, '');
     
     const match = mocks.find(m => 
       m.projectId === targetProject.id && 
@@ -489,7 +489,7 @@ const interceptor = async (url, options = {}) => {
 
   if (isTarget) {
     const path = new URL(urlStr).pathname;
-    const cleanPath = path.replace(/^\\/+/, '');
+    const cleanPath = path.replace(/^\/+/, '');
     
     // Check Mocks
     const match = MOCKS.find(m => 
@@ -532,6 +532,70 @@ if (typeof global !== 'undefined') {
   globalThis.fetch = interceptor;
 }
 `;
+  };
+
+  const getAxiosScript = () => {
+    return `/**
+ * AXIOS INTERCEPTOR
+ * Use this with any axios instance (e.g., api.js)
+ */
+const PROJECT = ${JSON.stringify(project, null, 2)};
+const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+
+export const setupNetworkInterceptor = (instance) => {
+  instance.interceptors.request.use(async (config) => {
+    const { url = '', method = 'get' } = config;
+    const methodUpper = method.toUpperCase();
+    
+    const isTarget = PROJECT.baseUrls.some(base => url.startsWith(base));
+
+    if (isTarget) {
+      const urlObj = new URL(url);
+      const path = urlObj.pathname;
+      const cleanPath = path.replace(/^\/+/, '');
+      
+      // Check Mocks
+      const match = MOCKS.find(m => 
+        (m.path === path || m.path === '/' + cleanPath) && 
+        m.method === methodUpper
+      );
+
+      if (match) {
+        config.adapter = async () => ({
+          data: JSON.parse(match.responseBody),
+          status: match.statusCode,
+          statusText: 'OK',
+          headers: { 'content-type': 'application/json' },
+          config
+        });
+        return config;
+      }
+
+      // Check Database
+      if (PROJECT.databaseJson && methodUpper === 'GET') {
+        try {
+          const db = JSON.parse(PROJECT.databaseJson);
+          const parts = cleanPath.split('/');
+          let current = db;
+          for (const part of parts) {
+            if (part && current && typeof current === 'object') current = current[part];
+          }
+          if (current !== undefined) {
+            config.adapter = async () => ({
+              data: current,
+              status: 200,
+              statusText: 'OK',
+              headers: { 'content-type': 'application/json' },
+              config
+            });
+            return config;
+          }
+        } catch (e) {}
+      }
+    }
+    return config;
+  });
+};`;
   };
 
   return (
@@ -584,7 +648,13 @@ if (typeof global !== 'undefined') {
               onClick={() => setEnv('server')}
               className={`px-3 py-1 text-[9px] font-bold uppercase transition-colors ${env === 'server' ? 'bg-amber-800 text-white' : 'text-amber-800 hover:bg-amber-200'}`}
             >
-              Server / Node
+              Server
+            </button>
+            <button 
+              onClick={() => setEnv('axios')}
+              className={`px-3 py-1 text-[9px] font-bold uppercase transition-colors ${env === 'axios' ? 'bg-amber-800 text-white' : 'text-amber-800 hover:bg-amber-200'}`}
+            >
+              Axios
             </button>
           </div>
         </div>
@@ -592,12 +662,14 @@ if (typeof global !== 'undefined') {
         <p className="text-xs text-amber-700 leading-relaxed font-serif italic">
           {env === 'client' 
             ? "Syncs with localStorage. Use this for standard React/Vue apps in the browser." 
-            : "Embeds static data. Use this for Next.js Server Components or Node.js API routes."}
+            : env === 'server'
+            ? "Embeds static data. Use this for Next.js Server Components or Node.js API routes."
+            : "Request interceptor for Axios instances. Useful for complex project structures."}
         </p>
 
         <div className="relative group">
           <pre className="p-4 bg-white border border-amber-200 text-[9px] overflow-x-auto mono text-amber-900 leading-tight max-h-[400px]">
-            {env === 'client' ? getClientScript() : getServerScript()}
+            {env === 'client' ? getClientScript() : env === 'server' ? getServerScript() : getAxiosScript()}
           </pre>
           <button 
             onClick={() => {
