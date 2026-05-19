@@ -434,7 +434,7 @@ window.fetch = async (url, options = {}) => {
   if (targetProject) {
     const urlObj = new URL(url.toString(), window.location.origin);
     const path = urlObj.pathname;
-    const cleanPath = path.replace(/^\/+/, '');
+    const cleanPath = path.replace(/^\\/+/, '');
     
     const match = mocks.find(m => 
       m.projectId === targetProject.id && 
@@ -443,7 +443,10 @@ window.fetch = async (url, options = {}) => {
     );
 
     if (match) {
-      console.log(\`[ProxyMocker] Intercepted: \${method} \${path}\`);
+      console.log('-------------------------');
+      console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${path}\`);
+      try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
+      console.log('-------------------------');
       return new Response(match.responseBody, {
         status: match.statusCode,
         headers: { 'Content-Type': 'application/json' }
@@ -459,6 +462,10 @@ window.fetch = async (url, options = {}) => {
           if (part && current && typeof current === 'object') current = current[part];
         }
         if (current !== undefined) {
+          console.log('-------------------------');
+          console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${path}\`);
+          console.log('Response:', current);
+          console.log('-------------------------');
           return new Response(JSON.stringify(current), {
             status: 200,
             headers: { 'Content-Type': 'application/json' }
@@ -489,7 +496,7 @@ const interceptor = async (url, options = {}) => {
 
   if (isTarget) {
     const path = new URL(urlStr).pathname;
-    const cleanPath = path.replace(/^\/+/, '');
+    const cleanPath = path.replace(/^\\/+/, '');
     
     // Check Mocks
     const match = MOCKS.find(m => 
@@ -498,6 +505,10 @@ const interceptor = async (url, options = {}) => {
     );
 
     if (match) {
+      console.log('-------------------------');
+      console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${path}\`);
+      try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
+      console.log('-------------------------');
       return new Response(match.responseBody, {
         status: match.statusCode,
         headers: { 'Content-Type': 'application/json' }
@@ -514,6 +525,10 @@ const interceptor = async (url, options = {}) => {
           if (part && current && typeof current === 'object') current = current[part];
         }
         if (current !== undefined) {
+          console.log('-------------------------');
+          console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${path}\`);
+          console.log('Response:', current);
+          console.log('-------------------------');
           return new Response(JSON.stringify(current), {
             status: 200,
             headers: { 'Content-Type': 'application/json' }
@@ -552,7 +567,7 @@ export const setupNetworkInterceptor = (instance) => {
     if (isTarget) {
       const urlObj = new URL(url);
       const path = urlObj.pathname;
-      const cleanPath = path.replace(/^\/+/, '');
+      const cleanPath = path.replace(/^\\/+/, '');
       
       // Check Mocks
       const match = MOCKS.find(m => 
@@ -561,6 +576,10 @@ export const setupNetworkInterceptor = (instance) => {
       );
 
       if (match) {
+        console.log('-------------------------');
+        console.log(\`[ProxyMocker] Intercepted (Mock): \${methodUpper} \${path}\`);
+        try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
+        console.log('-------------------------');
         config.adapter = async () => ({
           data: JSON.parse(match.responseBody),
           status: match.statusCode,
@@ -581,6 +600,10 @@ export const setupNetworkInterceptor = (instance) => {
             if (part && current && typeof current === 'object') current = current[part];
           }
           if (current !== undefined) {
+            console.log('-------------------------');
+            console.log(\`[ProxyMocker] Intercepted (DB): \${methodUpper} \${path}\`);
+            console.log('Response:', current);
+            console.log('-------------------------');
             config.adapter = async () => ({
               data: current,
               status: 200,
