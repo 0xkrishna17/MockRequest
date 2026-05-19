@@ -559,17 +559,28 @@ const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === pr
 
 export const setupNetworkInterceptor = (instance) => {
   instance.interceptors.request.use(async (config) => {
-    const { url = '', method = 'get' } = config;
+    let { url = '', method = 'get', baseURL } = config;
     const methodUpper = method.toUpperCase();
     
-    const isTarget = PROJECT.baseUrls.some(base => url.startsWith(base));
+    // Construct full URL if relative
+    let fullUrl = url;
+    if (baseURL && !/^https?:\\/\\//i.test(url)) {
+      fullUrl = baseURL.replace(/\\/+$/, '') + '/' + url.replace(/^\\/+/, '');
+    }
+    
+    const isTarget = PROJECT.baseUrls.some(base => fullUrl.startsWith(base));
 
     if (isTarget) {
-      const urlObj = new URL(url);
+      let urlObj;
+      try {
+        urlObj = new URL(fullUrl);
+      } catch (e) {
+        urlObj = new URL(fullUrl, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+      }
+      
       const path = urlObj.pathname;
       const cleanPath = path.replace(/^\\/+/, '');
       
-      // Check Mocks
       const match = MOCKS.find(m => 
         (m.path === path || m.path === '/' + cleanPath) && 
         m.method === methodUpper
@@ -590,7 +601,6 @@ export const setupNetworkInterceptor = (instance) => {
         return config;
       }
 
-      // Check Database
       if (PROJECT.databaseJson && methodUpper === 'GET') {
         try {
           const db = JSON.parse(PROJECT.databaseJson);
