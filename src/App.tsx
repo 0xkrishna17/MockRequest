@@ -435,16 +435,36 @@ function ProjectSettings({ project, onUpdate }: { project: Project, onUpdate: (p
           <Settings size={16} />
           <span className="font-bold text-xs uppercase tracking-widest">Interception Script</span>
         </div>
-        <p className="text-xs text-amber-700 leading-relaxed">
-          Copy this script and paste it into your application's entry point to start intercepting calls automatically.
+        <p className="text-xs text-amber-700 leading-relaxed font-serif italic">
+          This script will automatically initialize your local database and start intercepting calls.
         </p>
         <div className="relative group">
-          <pre className="p-4 bg-white border border-amber-200 text-[10px] overflow-x-auto mono text-amber-900 leading-tight">
-{`const ORIGINAL_FETCH = window.fetch;
+          <pre className="p-4 bg-white border border-amber-200 text-[9px] overflow-x-auto mono text-amber-900 leading-tight max-h-[400px]">
+{`// 1. BOOTSTRAP DATA (Paste at top of app)
+(function initializeProxyMocker() {
+  const currentProject = ${JSON.stringify(project, null, 2)};
+  const currentMocks = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+  
+  // Sync to localStorage
+  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
+  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
+  
+  const pIndex = projects.findIndex(p => p.id === currentProject.id);
+  if (pIndex > -1) projects[pIndex] = currentProject;
+  else projects.push(currentProject);
+  
+  const otherMocks = mocks.filter(m => m.projectId !== currentProject.id);
+  const updatedMocks = [...otherMocks, ...currentMocks];
+  
+  localStorage.setItem('proxymocker_projects', JSON.stringify(projects));
+  localStorage.setItem('proxymocker_mocks', JSON.stringify(updatedMocks));
+  console.log('[ProxyMocker] Source of truth updated for: ' + currentProject.name);
+})();
+
+// 2. NETWORK INTERCEPTOR
+const ORIGINAL_FETCH = window.fetch;
 window.fetch = async (url, options = {}) => {
   const method = options.method || 'GET';
-  
-  // Real-time lookup from source of truth
   const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
   const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
   
@@ -453,36 +473,36 @@ window.fetch = async (url, options = {}) => {
   );
 
   if (targetProject) {
-    const urlObj = new URL(url.toString(), 'http://dummy.com');
+    const urlObj = new URL(url.toString(), window.location.origin);
     const path = urlObj.pathname;
     const cleanPath = path.replace(/^\\/+/, '');
     
-    // 1. Try explicit mock match first
+    // Check Mocks
     const match = mocks.find(m => 
       m.projectId === targetProject.id && 
-      (m.path === path || m.path === \`/\${cleanPath}\`) && 
+      (m.path === path || m.path === '/' + cleanPath) && 
       m.method === method
     );
 
     if (match) {
+      console.log(\`[ProxyMock] \${method} \${path}\`);
       return new Response(match.responseBody, {
         status: match.statusCode,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // 2. Try JSON Database match
+    // Check DB
     if (targetProject.databaseJson && method === 'GET') {
       try {
         const db = JSON.parse(targetProject.databaseJson);
         const parts = cleanPath.split('/');
         let current = db;
         for (const part of parts) {
-          if (part && current && typeof current === 'object') {
-            current = current[part];
-          }
+          if (part && current && typeof current === 'object') current = current[part];
         }
         if (current !== undefined) {
+          console.log(\`[ProxyDB] \${path}\`);
           return new Response(JSON.stringify(current), {
             status: 200,
             headers: { 'Content-Type': 'application/json' }
@@ -497,9 +517,12 @@ window.fetch = async (url, options = {}) => {
           <button 
             onClick={() => {
               const code = document.querySelector('pre')?.innerText;
-              if (code) navigator.clipboard.writeText(code);
+              if (code) {
+                navigator.clipboard.writeText(code);
+                alert("Script copied to clipboard!");
+              }
             }}
-            className="absolute top-2 right-2 p-2 bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 transition-colors"
+            className="absolute top-2 right-2 p-2 bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 transition-colors shadow-sm"
           >
             <Copy size={12} />
           </button>
