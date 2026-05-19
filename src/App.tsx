@@ -391,10 +391,147 @@ function MockEditor({ mock, onUpdate, onDelete, onClose }: {
 
 function ProjectSettings({ project, onUpdate }: { project: Project, onUpdate: (p: Project) => void }) {
   const [urls, setUrls] = useState(project.baseUrls.join('\n'));
+  const [env, setEnv] = useState<'client' | 'server'>('client');
 
   const handleSave = () => {
     const list = urls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
     onUpdate({ ...project, baseUrls: list });
+  };
+
+  const getClientScript = () => {
+    return `// 1. BOOTSTRAP DATA (Paste at top of app)
+(function initializeProxyMocker() {
+  const currentProject = ${JSON.stringify(project, null, 2)};
+  const currentMocks = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+  
+  // Sync to localStorage
+  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
+  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
+  
+  const pIndex = projects.findIndex(p => p.id === currentProject.id);
+  if (pIndex > -1) projects[pIndex] = currentProject;
+  else projects.push(currentProject);
+  
+  const otherMocks = mocks.filter(m => m.projectId !== currentProject.id);
+  const updatedMocks = [...otherMocks, ...currentMocks];
+  
+  localStorage.setItem('proxymocker_projects', JSON.stringify(projects));
+  localStorage.setItem('proxymocker_mocks', JSON.stringify(updatedMocks));
+  console.log('[ProxyMocker] Source of truth updated: ' + currentProject.name);
+})();
+
+// 2. NETWORK INTERCEPTOR
+const ORIGINAL_FETCH = window.fetch;
+window.fetch = async (url, options = {}) => {
+  const method = options.method || 'GET';
+  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
+  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
+  
+  const targetProject = projects.find(p => 
+    p.baseUrls.some(base => url.toString().startsWith(base))
+  );
+
+  if (targetProject) {
+    const urlObj = new URL(url.toString(), window.location.origin);
+    const path = urlObj.pathname;
+    const cleanPath = path.replace(/^\\/+/, '');
+    
+    const match = mocks.find(m => 
+      m.projectId === targetProject.id && 
+      (m.path === path || m.path === '/' + cleanPath) && 
+      m.method === method
+    );
+
+    if (match) {
+      console.log(\`[ProxyMocker] Intercepted: \${method} \${path}\`);
+      return new Response(match.responseBody, {
+        status: match.statusCode,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (targetProject.databaseJson && method === 'GET') {
+      try {
+        const db = JSON.parse(targetProject.databaseJson);
+        const parts = cleanPath.split('/');
+        let current = db;
+        for (const part of parts) {
+          if (part && current && typeof current === 'object') current = current[part];
+        }
+        if (current !== undefined) {
+          return new Response(JSON.stringify(current), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      } catch (e) {}
+    }
+  }
+  return ORIGINAL_FETCH(url, options);
+};`;
+  };
+
+  const getServerScript = () => {
+    return `/**
+ * SERVER-SIDE INTERCEPTOR (Node.js / Next.js)
+ * Paste this in your server entry point (e.g., instrumentation.ts, or middleware)
+ */
+const PROJECT = ${JSON.stringify(project, null, 2)};
+const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+
+const ORIGINAL_FETCH = global.fetch || fetch;
+
+const interceptor = async (url, options = {}) => {
+  const method = (options.method || 'GET').toUpperCase();
+  const urlStr = url.toString();
+  
+  const isTarget = PROJECT.baseUrls.some(base => urlStr.startsWith(base));
+
+  if (isTarget) {
+    const path = new URL(urlStr).pathname;
+    const cleanPath = path.replace(/^\\/+/, '');
+    
+    // Check Mocks
+    const match = MOCKS.find(m => 
+      (m.path === path || m.path === '/' + cleanPath) && 
+      m.method === method
+    );
+
+    if (match) {
+      return new Response(match.responseBody, {
+        status: match.statusCode,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Check Database
+    if (PROJECT.databaseJson && method === 'GET') {
+      try {
+        const db = JSON.parse(PROJECT.databaseJson);
+        const parts = cleanPath.split('/');
+        let current = db;
+        for (const part of parts) {
+          if (part && current && typeof current === 'object') current = current[part];
+        }
+        if (current !== undefined) {
+          return new Response(JSON.stringify(current), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      } catch (e) {}
+    }
+  }
+  return ORIGINAL_FETCH(url, options);
+};
+
+// Apply to global context
+if (typeof global !== 'undefined') {
+  global.fetch = interceptor;
+} else if (typeof globalThis !== 'undefined') {
+  globalThis.fetch = interceptor;
+}
+`;
   };
 
   return (
@@ -431,88 +568,36 @@ function ProjectSettings({ project, onUpdate }: { project: Project, onUpdate: (p
       </div>
 
       <div className="p-6 bg-amber-50 border border-amber-200 space-y-4">
-        <div className="flex items-center gap-2 text-amber-800">
-          <Settings size={16} />
-          <span className="font-bold text-xs uppercase tracking-widest">Interception Script</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-amber-800">
+            <Settings size={16} />
+            <span className="font-bold text-xs uppercase tracking-widest">Interception Script</span>
+          </div>
+          <div className="flex bg-amber-100 p-0.5 border border-amber-200">
+            <button 
+              onClick={() => setEnv('client')}
+              className={`px-3 py-1 text-[9px] font-bold uppercase transition-colors ${env === 'client' ? 'bg-amber-800 text-white' : 'text-amber-800 hover:bg-amber-200'}`}
+            >
+              Browser
+            </button>
+            <button 
+              onClick={() => setEnv('server')}
+              className={`px-3 py-1 text-[9px] font-bold uppercase transition-colors ${env === 'server' ? 'bg-amber-800 text-white' : 'text-amber-800 hover:bg-amber-200'}`}
+            >
+              Server / Node
+            </button>
+          </div>
         </div>
+        
         <p className="text-xs text-amber-700 leading-relaxed font-serif italic">
-          This script will automatically initialize your local database and start intercepting calls.
+          {env === 'client' 
+            ? "Syncs with localStorage. Use this for standard React/Vue apps in the browser." 
+            : "Embeds static data. Use this for Next.js Server Components or Node.js API routes."}
         </p>
+
         <div className="relative group">
           <pre className="p-4 bg-white border border-amber-200 text-[9px] overflow-x-auto mono text-amber-900 leading-tight max-h-[400px]">
-{`// 1. BOOTSTRAP DATA (Paste at top of app)
-(function initializeProxyMocker() {
-  const currentProject = ${JSON.stringify(project, null, 2)};
-  const currentMocks = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
-  
-  // Sync to localStorage
-  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
-  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
-  
-  const pIndex = projects.findIndex(p => p.id === currentProject.id);
-  if (pIndex > -1) projects[pIndex] = currentProject;
-  else projects.push(currentProject);
-  
-  const otherMocks = mocks.filter(m => m.projectId !== currentProject.id);
-  const updatedMocks = [...otherMocks, ...currentMocks];
-  
-  localStorage.setItem('proxymocker_projects', JSON.stringify(projects));
-  localStorage.setItem('proxymocker_mocks', JSON.stringify(updatedMocks));
-  console.log('[ProxyMocker] Source of truth updated for: ' + currentProject.name);
-})();
-
-// 2. NETWORK INTERCEPTOR
-const ORIGINAL_FETCH = window.fetch;
-window.fetch = async (url, options = {}) => {
-  const method = options.method || 'GET';
-  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
-  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
-  
-  const targetProject = projects.find(p => 
-    p.baseUrls.some(base => url.toString().startsWith(base))
-  );
-
-  if (targetProject) {
-    const urlObj = new URL(url.toString(), window.location.origin);
-    const path = urlObj.pathname;
-    const cleanPath = path.replace(/^\\/+/, '');
-    
-    // Check Mocks
-    const match = mocks.find(m => 
-      m.projectId === targetProject.id && 
-      (m.path === path || m.path === '/' + cleanPath) && 
-      m.method === method
-    );
-
-    if (match) {
-      console.log(\`[ProxyMock] \${method} \${path}\`);
-      return new Response(match.responseBody, {
-        status: match.statusCode,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    // Check DB
-    if (targetProject.databaseJson && method === 'GET') {
-      try {
-        const db = JSON.parse(targetProject.databaseJson);
-        const parts = cleanPath.split('/');
-        let current = db;
-        for (const part of parts) {
-          if (part && current && typeof current === 'object') current = current[part];
-        }
-        if (current !== undefined) {
-          console.log(\`[ProxyDB] \${path}\`);
-          return new Response(JSON.stringify(current), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      } catch (e) {}
-    }
-  }
-  return ORIGINAL_FETCH(url, options);
-};`}
+            {env === 'client' ? getClientScript() : getServerScript()}
           </pre>
           <button 
             onClick={() => {
