@@ -399,71 +399,73 @@ function ProjectSettings({ project, onUpdate }: { project: Project, onUpdate: (p
   };
 
   const getClientScript = () => {
-    return `// 1. BOOTSTRAP DATA (Paste at top of app)
+    return `/**
+ * BROWSER INTERCEPTOR (Vanilla / React / Vue)
+ * Paste this at the top of your main entry point (e.g., main.tsx or index.js)
+ */
 (function initializeProxyMocker() {
-  const currentProject = ${JSON.stringify(project, null, 2)};
-  const currentMocks = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+  const PROJECT = ${JSON.stringify(project, null, 2)};
+  const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
+  
+  // Helpers
+  const normalizePath = (path = '') => '/' + path.replace(/^\\/+|^\\/+$/g, '').replace(/\\/+$/, '');
+  const safeParseJson = (val) => { try { return JSON.parse(val); } catch { return val; } };
   
   // Sync to localStorage
   const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
   const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
   
-  const pIndex = projects.findIndex(p => p.id === currentProject.id);
-  if (pIndex > -1) projects[pIndex] = currentProject;
-  else projects.push(currentProject);
+  const pIndex = projects.findIndex(p => p.id === PROJECT.id);
+  if (pIndex > -1) projects[pIndex] = PROJECT;
+  else projects.push(PROJECT);
   
-  const otherMocks = mocks.filter(m => m.projectId !== currentProject.id);
-  const updatedMocks = [...otherMocks, ...currentMocks];
-  
+  const filterMocks = mocks.filter(m => m.projectId !== PROJECT.id);
   localStorage.setItem('proxymocker_projects', JSON.stringify(projects));
-  localStorage.setItem('proxymocker_mocks', JSON.stringify(updatedMocks));
-  console.log('[ProxyMocker] Source of truth updated: ' + currentProject.name);
-})();
+  localStorage.setItem('proxymocker_mocks', JSON.stringify([...filterMocks, ...MOCKS]));
+  console.log('[ProxyMocker] Source of truth updated: ' + PROJECT.name);
 
-// 2. NETWORK INTERCEPTOR
-const ORIGINAL_FETCH = window.fetch;
-window.fetch = async (url, options = {}) => {
-  const method = options.method || 'GET';
-  const projects = JSON.parse(localStorage.getItem('proxymocker_projects') || '[]');
-  const mocks = JSON.parse(localStorage.getItem('proxymocker_mocks') || '[]');
-  
-  const targetProject = projects.find(p => 
-    p.baseUrls.some(base => url.toString().startsWith(base))
-  );
-
-  if (targetProject) {
-    const urlObj = new URL(url.toString(), window.location.origin);
-    const path = urlObj.pathname;
-    const cleanPath = path.replace(/^\\/+/, '');
+  // Network Interceptor
+  const ORIGINAL_FETCH = window.fetch;
+  window.fetch = async (url, options = {}) => {
+    const method = (options.method || 'GET').toUpperCase();
+    const urlStr = url.toString();
     
-    const match = mocks.find(m => 
-      m.projectId === targetProject.id && 
-      (m.path === path || m.path === '/' + cleanPath) && 
-      m.method === method
-    );
+    const matchedBase = PROJECT.baseUrls.find(base => {
+      const normBase = base.replace(/\\/+$/, '');
+      return urlStr === normBase || urlStr.startsWith(normBase + '/') || urlStr.startsWith(normBase + '?') || urlStr.startsWith(normBase + '#');
+    });
 
-    if (match) {
-      console.log('-------------------------');
-      console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${path}\`);
-      try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
-      console.log('-------------------------');
-      return new Response(match.responseBody, {
-        status: match.statusCode,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
+    if (matchedBase) {
+      const urlObj = new URL(urlStr, window.location.origin);
+      let relativePath = normalizePath(urlStr.slice(matchedBase.length).split('?')[0].split('#')[0]);
+      
+      const match = MOCKS.find(m => 
+        m.isActive && m.method === method && normalizePath(m.path) === relativePath
+      );
 
-    if (targetProject.databaseJson && method === 'GET') {
-      try {
-        const db = JSON.parse(targetProject.databaseJson);
-        const parts = cleanPath.split('/');
+      if (match) {
+        console.log('-------------------------');
+        console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${relativePath}\`);
+        console.log('Response:', safeParseJson(match.responseBody));
+        console.log('-------------------------');
+        if (match.delayMs > 0) await new Promise(r => setTimeout(r, match.delayMs));
+        return new Response(match.responseBody, {
+          status: match.statusCode || 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      const db = PROJECT.databaseJson ? safeParseJson(PROJECT.databaseJson) : null;
+      if (db && method === 'GET') {
+        const parts = relativePath.replace(/^\\/+/, '').split('/');
         let current = db;
         for (const part of parts) {
-          if (part && current && typeof current === 'object') current = current[part];
+          if (part && current && typeof current === 'object' && part in current) current = current[part];
+          else if (part) { current = undefined; break; }
         }
         if (current !== undefined) {
           console.log('-------------------------');
-          console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${path}\`);
+          console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${relativePath}\`);
           console.log('Response:', current);
           console.log('-------------------------');
           return new Response(JSON.stringify(current), {
@@ -471,11 +473,11 @@ window.fetch = async (url, options = {}) => {
             headers: { 'Content-Type': 'application/json' }
           });
         }
-      } catch (e) {}
+      }
     }
-  }
-  return ORIGINAL_FETCH(url, options);
-};`;
+    return ORIGINAL_FETCH(url, options);
+  };
+})();`;
   };
 
   const getServerScript = () => {
@@ -486,66 +488,68 @@ window.fetch = async (url, options = {}) => {
 const PROJECT = ${JSON.stringify(project, null, 2)};
 const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
 
+const normalizePath = (p = '') => '/' + p.replace(/^\\/+|^\\/+$/g, '').replace(/\\/+$/, '');
+const safeParseJson = (v) => { try { return JSON.parse(v); } catch { return v; } };
+
 const ORIGINAL_FETCH = global.fetch || fetch;
 
 const interceptor = async (url, options = {}) => {
   const method = (options.method || 'GET').toUpperCase();
   const urlStr = url.toString();
   
-  const isTarget = PROJECT.baseUrls.some(base => urlStr.startsWith(base));
+  const matchedBase = PROJECT.baseUrls.find(base => {
+    const normBase = base.replace(/\\/+$/, '');
+    return urlStr === normBase || urlStr.startsWith(normBase + '/') || urlStr.startsWith(normBase + '?') || urlStr.startsWith(normBase + '#');
+  });
 
-  if (isTarget) {
-    const path = new URL(urlStr).pathname;
-    const cleanPath = path.replace(/^\\/+/, '');
+  if (matchedBase) {
+    const urlObj = new URL(urlStr, 'http://localhost');
+    let relativePath = normalizePath(urlStr.slice(matchedBase.length).split('?')[0].split('#')[0]);
     
     // Check Mocks
     const match = MOCKS.find(m => 
-      (m.path === path || m.path === '/' + cleanPath) && 
-      m.method === method
+      m.isActive && m.method === method && normalizePath(m.path) === relativePath
     );
 
     if (match) {
       console.log('-------------------------');
-      console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${path}\`);
-      try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
+      console.log(\`[ProxyMocker] Intercepted (Mock): \${method} \${relativePath}\`);
+      console.log('Response:', safeParseJson(match.responseBody));
       console.log('-------------------------');
+      if (match.delayMs > 0) await new Promise(r => setTimeout(r, match.delayMs));
       return new Response(match.responseBody, {
-        status: match.statusCode,
+        status: match.statusCode || 200,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
     // Check Database
-    if (PROJECT.databaseJson && method === 'GET') {
-      try {
-        const db = JSON.parse(PROJECT.databaseJson);
-        const parts = cleanPath.split('/');
-        let current = db;
-        for (const part of parts) {
-          if (part && current && typeof current === 'object') current = current[part];
-        }
-        if (current !== undefined) {
-          console.log('-------------------------');
-          console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${path}\`);
-          console.log('Response:', current);
-          console.log('-------------------------');
-          return new Response(JSON.stringify(current), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-      } catch (e) {}
+    const db = PROJECT.databaseJson ? safeParseJson(PROJECT.databaseJson) : null;
+    if (db && method === 'GET') {
+      const parts = relativePath.replace(/^\\/+/, '').split('/');
+      let current = db;
+      for (const part of parts) {
+        if (part && current && typeof current === 'object' && part in current) current = current[part];
+        else if (part) { current = undefined; break; }
+      }
+      if (current !== undefined) {
+        console.log('-------------------------');
+        console.log(\`[ProxyMocker] Intercepted (DB): \${method} \${relativePath}\`);
+        console.log('Response:', current);
+        console.log('-------------------------');
+        return new Response(JSON.stringify(current), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
     }
   }
   return ORIGINAL_FETCH(url, options);
 };
 
 // Apply to global context
-if (typeof global !== 'undefined') {
-  global.fetch = interceptor;
-} else if (typeof globalThis !== 'undefined') {
-  globalThis.fetch = interceptor;
-}
+if (typeof global !== 'undefined') global.fetch = interceptor;
+else if (typeof globalThis !== 'undefined') globalThis.fetch = interceptor;
 `;
   };
 
@@ -557,73 +561,73 @@ if (typeof global !== 'undefined') {
 const PROJECT = ${JSON.stringify(project, null, 2)};
 const MOCKS = ${JSON.stringify(storage.getMocks().filter(m => m.projectId === project.id), null, 2)};
 
+const normalizePath = (path = '') => '/' + path.replace(/^\\/+|^\\/+$/g, '').replace(/\\/+$/, '');
+const safeParseJson = (value) => { try { return JSON.parse(value); } catch { return value; } };
+const sleep = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
+const DATABASE = PROJECT.databaseJson ? safeParseJson(PROJECT.databaseJson) : null;
+
 export const setupNetworkInterceptor = (instance) => {
+  console.log('[ProxyMocker] Setting up interceptor');
+
   instance.interceptors.request.use(async (config) => {
     let { url = '', method = 'get', baseURL } = config;
     const methodUpper = method.toUpperCase();
-    
-    // Construct full URL if relative
+
     let fullUrl = url;
     if (baseURL && !/^https?:\\/\\//i.test(url)) {
       fullUrl = baseURL.replace(/\\/+$/, '') + '/' + url.replace(/^\\/+/, '');
     }
-    
-    const isTarget = PROJECT.baseUrls.some(base => fullUrl.startsWith(base));
 
-    if (isTarget) {
-      let urlObj;
-      try {
-        urlObj = new URL(fullUrl);
-      } catch (e) {
-        urlObj = new URL(fullUrl, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+    const matchedBase = PROJECT.baseUrls.find((base) => {
+      const normalizedBase = base.replace(/\\/+$/, '');
+      return fullUrl === normalizedBase || fullUrl.startsWith(normalizedBase + '/') || fullUrl.startsWith(normalizedBase + '?') || fullUrl.startsWith(normalizedBase + '#');
+    });
+
+    if (!matchedBase) return config;
+
+    let relativePath = normalizePath(fullUrl.slice(matchedBase.length).split('?')[0].split('#')[0]);
+
+    const match = MOCKS.find((mock) => {
+      return mock.isActive && mock.method?.toUpperCase() === methodUpper && normalizePath(mock.path) === relativePath;
+    });
+
+    if (match) {
+      console.log('-------------------------');
+      console.log(\`[ProxyMocker] Intercepted (Mock): \${methodUpper} \${relativePath}\`);
+      console.log('Response:', safeParseJson(match.responseBody));
+      console.log('-------------------------');
+      if (match.delayMs > 0) await sleep(match.delayMs);
+      config.adapter = async () => ({
+        data: safeParseJson(match.responseBody),
+        status: match.statusCode || 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        config
+      });
+      return config;
+    }
+
+    if (DATABASE && methodUpper === 'GET') {
+      const parts = relativePath.replace(/^\\/+/, '').split('/');
+      let current = DATABASE;
+      for (const part of parts) {
+        if (part && current && typeof current === 'object' && part in current) current = current[part];
+        else if (part) { current = undefined; break; }
       }
-      
-      const path = urlObj.pathname;
-      const cleanPath = path.replace(/^\\/+/, '');
-      
-      const match = MOCKS.find(m => 
-        (m.path === path || m.path === '/' + cleanPath) && 
-        m.method === methodUpper
-      );
 
-      if (match) {
+      if (current !== undefined) {
         console.log('-------------------------');
-        console.log(\`[ProxyMocker] Intercepted (Mock): \${methodUpper} \${path}\`);
-        try { console.log('Response:', JSON.parse(match.responseBody)); } catch(e) { console.log('Response:', match.responseBody); }
+        console.log(\`[ProxyMocker] Intercepted (DB): \${methodUpper} \${relativePath}\`);
+        console.log('Response:', current);
         console.log('-------------------------');
         config.adapter = async () => ({
-          data: JSON.parse(match.responseBody),
-          status: match.statusCode,
+          data: current,
+          status: 200,
           statusText: 'OK',
           headers: { 'content-type': 'application/json' },
           config
         });
         return config;
-      }
-
-      if (PROJECT.databaseJson && methodUpper === 'GET') {
-        try {
-          const db = JSON.parse(PROJECT.databaseJson);
-          const parts = cleanPath.split('/');
-          let current = db;
-          for (const part of parts) {
-            if (part && current && typeof current === 'object') current = current[part];
-          }
-          if (current !== undefined) {
-            console.log('-------------------------');
-            console.log(\`[ProxyMocker] Intercepted (DB): \${methodUpper} \${path}\`);
-            console.log('Response:', current);
-            console.log('-------------------------');
-            config.adapter = async () => ({
-              data: current,
-              status: 200,
-              statusText: 'OK',
-              headers: { 'content-type': 'application/json' },
-              config
-            });
-            return config;
-          }
-        } catch (e) {}
       }
     }
     return config;
@@ -799,8 +803,16 @@ function Playground({ projects, mocks }: { projects: Project[], mocks: MockEndpo
 
   const handleTest = () => {
     // Simulate interception
+    let matchedBase = '';
     const targetProject = projects.find(p => 
-      p.baseUrls.some(base => url.startsWith(base))
+      p.baseUrls.some(base => {
+        const isMatch = url === base || url.startsWith(base + '/') || url.startsWith(base + '?') || url.startsWith(base + '#');
+        if (isMatch) {
+          matchedBase = base;
+          return true;
+        }
+        return false;
+      })
     );
 
     let result: any = null;
@@ -810,14 +822,20 @@ function Playground({ projects, mocks }: { projects: Project[], mocks: MockEndpo
     if (targetProject) {
       try {
         const urlObj = new URL(url);
-        const path = urlObj.pathname;
-        const cleanPath = path.replace(/^\/+/, '');
+        const fullPath = urlObj.pathname;
+        
+        // Calculate path relative to base URL
+        let relPath = url.slice(matchedBase.length);
+        if (!relPath.startsWith('/')) relPath = '/' + relPath;
+        const relPathObj = new URL(relPath, 'http://dummy.com');
+        const relativePath = relPathObj.pathname;
+
+        const cleanRelPath = relativePath.replace(/^\/+/, '');
         
         // 1. Check mocks
-        const match = mocks.find(m => 
-          m.projectId === targetProject.id && 
-          m.path === path && 
-          m.method === method
+        const match = mocks.filter(m => m.projectId === targetProject.id).find(m => 
+          m.method === method &&
+          (m.path === fullPath || m.path === relativePath || m.path === fullPath.replace(/^\/+/, '') || m.path === relativePath.replace(/^\/+/, ''))
         );
 
         if (match) {
@@ -828,7 +846,7 @@ function Playground({ projects, mocks }: { projects: Project[], mocks: MockEndpo
         // 2. Check Database
         else if (targetProject.databaseJson && method === HttpMethod.GET) {
           const db = JSON.parse(targetProject.databaseJson);
-          const parts = cleanPath.split('/');
+          const parts = cleanRelPath.split('/');
           let current = db;
           for (const part of parts) {
             if (part && current && typeof current === 'object') {
